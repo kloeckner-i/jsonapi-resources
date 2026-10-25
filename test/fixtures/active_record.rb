@@ -3,11 +3,37 @@ require 'jsonapi-resources'
 
 ActiveSupport::Inflector.inflections(:en) do |inflect|
   inflect.uncountable 'preferences'
+  inflect.uncountable 'file_properties'
   inflect.irregular 'numero_telefone', 'numeros_telefone'
 end
 
 ### DATABASE
 ActiveRecord::Schema.define do
+  create_table :sessions, id: false, force: true do |t|
+    t.string :id, :limit => 36, :primary_key => true, null: false
+    t.string :survey_id, :limit => 36, null: false
+
+    t.timestamps
+  end
+
+  create_table :responses, force: true do |t|
+    #t.string :id, :limit => 36, :primary_key => true, null: false
+
+    t.string :session_id, limit: 36, null: false
+
+    t.string :type
+    t.string :question_id, limit: 36
+
+    t.timestamps
+  end
+
+  create_table :response_texts, force: true do |t|
+    t.text :text
+    t.integer :response_id
+
+    t.timestamps
+  end
+
   create_table :people, force: true do |t|
     t.string     :name
     t.string     :email
@@ -22,6 +48,7 @@ ActiveRecord::Schema.define do
   create_table :author_details, force: true do |t|
     t.integer :person_id
     t.string  :author_stuff
+    t.timestamps null: false
   end
 
   create_table :posts, force: true do |t|
@@ -120,6 +147,7 @@ ActiveRecord::Schema.define do
   create_table :preferences, force: true do |t|
     t.integer :person_id
     t.boolean :advanced_mode, default: false
+    t.string  :nickname
     t.timestamps null: false
   end
 
@@ -213,18 +241,30 @@ ActiveRecord::Schema.define do
 
   create_table :pictures, force: true do |t|
     t.string  :name
+    t.integer :author_id
     t.references :imageable, polymorphic: true, index: true
     t.timestamps null: false
   end
 
   create_table :documents, force: true do |t|
     t.string  :name
+    t.integer :author_id
     t.timestamps null: false
   end
 
   create_table :products, force: true do |t|
     t.string  :name
+    t.integer :designer_id
     t.timestamps null: false
+  end
+
+  create_table :file_properties, force: true do |t|
+    t.string :name
+    t.timestamps null: false
+    t.references :fileable, polymorphic: true, index: true
+    t.belongs_to :tag, index: true
+
+    t.integer :size
   end
 
   create_table :vehicles, force: true do |t|
@@ -292,6 +332,7 @@ ActiveRecord::Schema.define do
 
   create_table :questions, force: true do |t|
     t.string :text
+    t.timestamps null: false
   end
 
   create_table :answers, force: true do |t|
@@ -299,16 +340,47 @@ ActiveRecord::Schema.define do
     t.integer :respondent_id
     t.string  :respondent_type
     t.string :text
+    t.timestamps null: false
   end
 
   create_table :patients, force: true do |t|
     t.string :name
+    t.timestamps null: false
   end
 
   create_table :doctors, force: true do |t|
     t.string :name
+    t.timestamps null: false
   end
 
+  create_table :painters, force: true do |t|
+    t.string :name
+
+    t.timestamps null: false
+  end
+
+  create_table :paintings, force: true do |t|
+    t.string :title
+    t.string :category
+    t.belongs_to :painter
+
+    t.timestamps null: false
+  end
+
+  create_table :collectors, force: true do |t|
+    t.string :name
+    t.belongs_to :painting
+  end
+
+  create_table :lists, force: true do |t|
+    t.string :name
+  end
+
+  create_table :list_items, force: true do |t|
+    t.belongs_to :list
+  end
+
+  # special cases
   create_table :storages, force: true do |t|
     t.string :token, null: false
     t.string :name
@@ -341,13 +413,14 @@ ActiveRecord::Schema.define do
 
   create_table :indicators, force: true do |t|
     t.string :name
+    t.string :import_id
     t.integer :agency_id, null: false
     t.timestamps null: false
   end
 
   create_table :widgets, force: true do |t|
     t.string :name
-    t.integer :indicator_id, null: false
+    t.string :indicator_import_id, null: false
     t.timestamps null: false
   end
 
@@ -359,6 +432,43 @@ ActiveRecord::Schema.define do
 end
 
 ### MODELS
+class Session < ActiveRecord::Base
+  self.primary_key = "id"
+  has_many :responses
+end
+
+class Response < ActiveRecord::Base
+	belongs_to :session
+	has_one :paragraph, :class_name => "ResponseText::Paragraph"
+
+	def response_type
+		case self.type
+		when "Response::SingleTextbox"
+          "single_textbox"
+		else
+          "question"
+		end
+	end
+	def response_type=type
+		self.type = case type
+		when "single_textbox"
+          "Response::SingleTextbox"
+		else
+		  "Response"
+		end
+	end
+end
+
+class Response::SingleTextbox < Response
+  has_one :paragraph, :class_name => "ResponseText::Paragraph", :foreign_key => :response_id
+end
+
+class ResponseText < ActiveRecord::Base
+end
+
+class ResponseText::Paragraph < ResponseText
+end
+
 class Person < ActiveRecord::Base
   has_many :posts, foreign_key: 'author_id'
   has_many :comments, foreign_key: 'author_id'
@@ -370,9 +480,14 @@ class Person < ActiveRecord::Base
   has_one :author_detail
 
   has_and_belongs_to_many :books, join_table: :book_authors
+  has_and_belongs_to_many :not_banned_books, -> { merge(Book.not_banned) },
+                          class_name: 'Book',
+                          join_table: :book_authors
 
   has_many :even_posts, -> { where('posts.id % 2 = 0') }, class_name: 'Post', foreign_key: 'author_id'
   has_many :odd_posts, -> { where('posts.id % 2 = 1') }, class_name: 'Post', foreign_key: 'author_id'
+
+  has_many :pictures, foreign_key: 'author_id'
 
   ### Validations
   validates :name, presence: true
@@ -388,7 +503,7 @@ class Post < ActiveRecord::Base
   belongs_to :writer, class_name: 'Person', foreign_key: 'author_id'
   has_many :comments
   has_and_belongs_to_many :tags, join_table: :posts_tags
-  has_many :special_post_tags, source: :tag
+  has_many :special_post_tags
   has_many :special_tags, through: :special_post_tags, source: :tag
   belongs_to :section
   belongs_to :parent_post, class_name: 'Post', foreign_key: 'parent_post_id'
@@ -402,24 +517,10 @@ class Post < ActiveRecord::Base
     case title
     when "can't destroy me", "can't destroy me either"
       errors.add(:base, "can't destroy me")
-
-      # :nocov:
-      if Rails::VERSION::MAJOR >= 5
-        throw(:abort)
-      else
-        return false
-      end
-      # :nocov:
+      throw(:abort)
     when "locked title"
       errors.add(:title, "is locked")
-
-      # :nocov:
-      if Rails::VERSION::MAJOR >= 5
-        throw(:abort)
-      else
-        return false
-      end
-      # :nocov:
+      throw(:abort)
     end
   end
 end
@@ -490,13 +591,7 @@ class Planet < ActiveRecord::Base
   def check_not_pluto
     # Pluto can't be a planet, so cancel the save
     if name.downcase == 'pluto'
-      # :nocov:
-      if Rails::VERSION::MAJOR >= 5
-        throw(:abort)
-      else
-        return false
-      end
-      # :nocov:
+      throw(:abort)
     end
   end
 end
@@ -556,6 +651,10 @@ class Book < ActiveRecord::Base
   has_many :approved_book_comments, -> { where(approved: true) }, class_name: "BookComment"
 
   has_and_belongs_to_many :authors, join_table: :book_authors, class_name: "Person"
+
+  scope :not_banned, -> {
+    where(banned: false)
+  }
 end
 
 class BookComment < ActiveRecord::Base
@@ -563,7 +662,7 @@ class BookComment < ActiveRecord::Base
   belongs_to :book
 
   def self.for_user(current_user)
-    records = self
+    records = self.all
     # Hide the unapproved comments from people who are not book admins
     unless current_user && current_user.book_admin
       records = records.where(approved: true)
@@ -623,10 +722,13 @@ class Category < ActiveRecord::Base
 end
 
 class Picture < ActiveRecord::Base
-  belongs_to :imageable, polymorphic: true
+  belongs_to :author, class_name: 'Person', foreign_key: 'author_id'
 
-  # belongs_to :document, -> { where( pictures: { imageable_type: 'Document' } ).includes( :pictures ) }, foreign_key: 'imageable_id'
-  # belongs_to :product, -> { where( pictures: { imageable_type: 'Product' } ).includes( :pictures ) }, foreign_key: 'imageable_id'
+  belongs_to :imageable, polymorphic: true
+  belongs_to :document, -> { where( pictures: { imageable_type: 'Document' } ) }, foreign_key: 'imageable_id'
+  belongs_to :product, -> { where( pictures: { imageable_type: 'Product' } ) }, foreign_key: 'imageable_id'
+
+  has_one :file_properties, as: 'fileable'
 end
 
 class Vehicle < ActiveRecord::Base
@@ -641,10 +743,19 @@ end
 
 class Document < ActiveRecord::Base
   has_many :pictures, as: :imageable
+  belongs_to :author, class_name: 'Person', foreign_key: 'author_id'
+  has_one :file_properties, as: 'fileable'
 end
 
 class Product < ActiveRecord::Base
   has_many :pictures, as: :imageable
+  belongs_to :designer, class_name: 'Person', foreign_key: 'designer_id'
+  has_one :file_properties, as: 'fileable'
+end
+
+class FileProperties < ActiveRecord::Base
+  belongs_to :fileable, polymorphic: true
+  belongs_to :tag
 end
 
 class Make < ActiveRecord::Base
@@ -724,18 +835,53 @@ end
 
 class Indicator < ActiveRecord::Base
   belongs_to :agency
-  has_many :widgets
+  has_many :widgets, primary_key: :import_id, foreign_key: :indicator_import_id
 end
 
 class Widget < ActiveRecord::Base
-  belongs_to :indicator
+  belongs_to :indicator, primary_key: :import_id, foreign_key: :indicator_import_id
 end
 
 class Robot < ActiveRecord::Base
 end
 
+class Painter < ActiveRecord::Base
+  has_many :paintings
+end
+
+class Painting < ActiveRecord::Base
+  belongs_to :painter
+  has_many :collectors
+end
+
+class Collector < ActiveRecord::Base
+  belongs_to :painting
+end
+
+class List < ActiveRecord::Base
+  has_many :items, class_name: 'ListItem', inverse_of: :list
+end
+
+class ListItem < ActiveRecord::Base
+  belongs_to :list, inverse_of: :items
+end
+
 ### CONTROLLERS
+class SessionsController < ActionController::Base
+  include JSONAPI::ActsAsResourceController
+  before_action :create_responses_relationships, :only => [:create,:update]
+
+  private
+    def create_responses_relationships
+      if !params[:data][:relationships].nil? && !params[:data][:relationships][:responses].nil?
+        responses_params = params[:data][:relationships].delete(:responses)
+        params[:data][:attributes][:responses] = responses_params
+      end
+    end
+end
+
 class AuthorsController < JSONAPI::ResourceControllerMetal
+  include Rails.application.routes.url_helpers
 end
 
 class PeopleController < JSONAPI::ResourceController
@@ -751,7 +897,7 @@ class PostsController < BaseController
   class SubSpecialError < PostsController::SpecialError; end
   class SerializeError < StandardError; end
 
-  # This is used to test that classes that are whitelisted are reraised by
+  # This is used to test that classes that are allowed are reraised by
   # the operations dispatcher.
   rescue_from PostsController::SpecialError do
     head :forbidden
@@ -814,6 +960,9 @@ class ProductsController < JSONAPI::ResourceController
 end
 
 class ImageablesController < JSONAPI::ResourceController
+end
+
+class FilePropertiesController < JSONAPI::ResourceController
 end
 
 class VehiclesController < JSONAPI::ResourceController
@@ -889,6 +1038,9 @@ module Api
     end
 
     class PreferencesController < JSONAPI::ResourceController
+      def context
+        {current_user: $test_user}
+      end
     end
 
     class BooksController < JSONAPI::ResourceController
@@ -906,6 +1058,8 @@ module Api
 
   module V3
     class PostsController < JSONAPI::ResourceController
+    end
+    class MoonsController < JSONAPI::ResourceController
     end
   end
 
@@ -938,10 +1092,16 @@ module Api
 
     class IsoCurrenciesController < JSONAPI::ResourceController
     end
+
+    class PaintersController < JSONAPI::ResourceController
+    end
   end
 
   module V6
     class AuthorsController < JSONAPI::ResourceController
+    end
+
+    class AuthorDetailsController < JSONAPI::ResourceController
     end
 
     class PostsController < JSONAPI::ResourceController
@@ -990,6 +1150,35 @@ module Api
     class NumerosTelefoneController < JSONAPI::ResourceController
     end
   end
+
+  module V9
+    class AuthorsController < JSONAPI::ResourceController
+    end
+
+    class AuthorDetailsController < JSONAPI::ResourceController
+    end
+
+    class PostsController < JSONAPI::ResourceController
+    end
+
+    class CommentsController < JSONAPI::ResourceController
+    end
+
+    class SectionsController < JSONAPI::ResourceController
+    end
+
+    class PeopleController < JSONAPI::ResourceController
+      def context
+        {current_user: $test_user}
+      end
+    end
+
+    class PreferencesController < JSONAPI::ResourceController
+      def context
+        {current_user: $test_user}
+      end
+    end
+  end
 end
 
 module Api
@@ -1010,6 +1199,12 @@ class DoctorsController < JSONAPI::ResourceController
 end
 
 class RespondentController < JSONAPI::ResourceController
+end
+
+class ListsController < JSONAPI::ResourceController
+end
+
+class ListItemsController < JSONAPI::ResourceController
 end
 
 class StoragesController < BaseController
@@ -1036,6 +1231,57 @@ end
 ### RESOURCES
 class BaseResource < JSONAPI::Resource
   abstract
+end
+
+class SessionResource < JSONAPI::Resource
+  key_type :uuid
+
+  attributes :survey_id, :responses
+
+  has_many :responses
+
+  def responses=params
+    params[:data].each { |datum|
+      response = @model.responses.build(((datum[:attributes].respond_to?(:permit))? datum[:attributes].permit(:response_type, :question_id) : datum[:attributes]))
+
+      (datum[:relationships] || {}).each_pair { |k,v|
+        case k
+        when "paragraph"
+          response.paragraph = ResponseText::Paragraph.create(((v[:data][:attributes].respond_to?(:permit))? v[:data][:attributes].permit(:text) : v[:data][:attributes]))
+        end
+      }
+    }
+  end
+  def responses
+  end
+
+  def self.creatable_fields(context)
+    super + [
+      :id,
+    ]
+  end
+
+  def fetchable_fields
+    super - [:responses]
+  end
+end
+
+class ResponseResource < JSONAPI::Resource
+  model_hint model: Response::SingleTextbox, resource: :response
+
+  has_one :session
+
+  attributes :question_id, :response_type
+
+  has_one :paragraph
+end
+
+class ParagraphResource < JSONAPI::Resource
+  model_name 'ResponseText::Paragraph'
+
+  attributes :text
+
+  has_one :response
 end
 
 class PersonResource < BaseResource
@@ -1093,10 +1339,12 @@ class VehicleResource < JSONAPI::Resource
 end
 
 class CarResource < VehicleResource
+  model_name "Car"
   attributes :drive_layout
 end
 
 class BoatResource < VehicleResource
+  model_name "Boat"
   attributes :length_at_water_line
 end
 
@@ -1222,6 +1470,11 @@ class PostResource < JSONAPI::Resource
       records.where(title: values.first['title'])
     }
 
+  filter 'tags.name'
+
+  filter 'comments.author.name'
+  filter 'comments.tags.name'
+
   def self.updatable_fields(context)
     super(context) - [:author, :subject]
   end
@@ -1271,37 +1524,126 @@ class EmployeeResource < JSONAPI::Resource
   has_many :expense_entries
 end
 
-module BreedResourceFinder
-  def self.included(base)
-    base.extend ClassMethods
-  end
+class PoroResource < JSONAPI::BasicResource
+  root_resource
 
-  module ClassMethods
+  class << self
+    def find_records(filters, options)
+      fail NotImplementedError, <<~EOF
+        Should be something like
+        def find_records(filters, options)
+          breeds = []
+          id_filter = filters[:id]
+          id_filter = [id_filter] unless id_filter.nil? || id_filter.is_a?(Array)
+          $breed_data.breeds.values.each do |breed|
+            breeds.push(breed) unless id_filter && !id_filter.include?(breed.id)
+          end
+          breeds
+        end
+      EOF
+    end
+
+    def find_record_by_key(key, options = {})
+      fail NotImplementedError, <<~EOF
+        Should be something like
+        def find_record_by_key(key, options = {})
+          $breed_data.breeds[key.to_i]
+        end
+      EOF
+    end
+
+    def find_records_by_keys(keys, options = {})
+      fail NotImplementedError, <<~EOF
+        Should be something like
+        def find_records_by_keys(keys, options = {})
+          breeds = []
+          keys.each do |key|
+            breeds.push($breed_data.breeds[key.to_i])
+          end
+          breeds
+        end
+      EOF
+    end
+
+    # Finds Resources using the `filters`. Pagination and sort options are used when provided
+    #
+    # @param filters [Hash] the filters hash
+    # @option options [Hash] :context The context of the request, set in the controller
+    # @option options [Hash] :sort_criteria The `sort criteria`
+    # @option options [Hash] :include_directives The `include_directives`
+    #
+    # @return [Array<Resource>] the Resource instances matching the filters, sorting and pagination rules.
     def find(filters, options = {})
       records = find_records(filters, options)
       resources_for(records, options[:context])
     end
 
     # Records
-    def find_fragments(filters, options = {})
-      identities = {}
-      find_records(filters, options).each do |breed|
-        identities[JSONAPI::ResourceIdentity.new(BreedResource, breed.id)] = { cache_field: nil }
+    def find_fragments(filters, options)
+      fragments = {}
+      find_records(filters, options).each do |record|
+        rid = JSONAPI::ResourceIdentity.new(resource_klass, record.id)
+        # We can use either the id or the full resource.
+        # fragments[rid] = JSONAPI::ResourceFragment.new(rid)
+        #  OR
+        # fragments[rid] = JSONAPI::ResourceFragment.new(rid, resource: resource_klass.new(record, options[:context]))
+        # In this case we will use the resource since we already looked up the model instance
+        fragments[rid] = JSONAPI::ResourceFragment.new(rid, resource: resource_klass.new(record, options[:context]))
       end
-      identities
+      fragments
     end
 
+    def resource_klass
+      self
+    end
+
+    # Counts Resources found using the `filters`
+    #
+    # @param filters [Hash] the filters hash
+    # @option options [Hash] :context The context of the request, set in the controller
+    #
+    # @return [Integer] the count
+    def count(filters, options = {})
+      fail NotImplementedError, <<~EOF
+        Should be something like
+        def count(filters, options)
+          0
+        end
+      EOF
+    end
+
+    # Returns the single Resource identified by `key`
+    #
+    # @param key the primary key of the resource to find
+    # @option options [Hash] :context The context of the request, set in the controller
     def find_by_key(key, options = {})
       record = find_record_by_key(key, options)
       resource_for(record, options[:context])
     end
 
+    def find_to_populate_by_keys(keys, options = {})
+      find_by_keys(keys, options)
+    end
+
+    # Returns an array of Resources identified by the `keys` array
+    #
+    # @param keys [Array<key>] Array of primary keys to find resources for
+    # @option options [Hash] :context The context of the request, set in the controller
     def find_by_keys(keys, options = {})
       records = find_records_by_keys(keys, options)
       resources_for(records, options[:context])
     end
+  end
+end
 
-    #
+class BreedResource < PoroResource
+
+  attribute :name, format: :title
+
+  # This is unneeded, just here for testing
+  routing_options param: :id
+
+  class << self
     def find_records(filters, options = {})
       breeds = []
       id_filter = filters[:id]
@@ -1324,21 +1666,12 @@ module BreedResourceFinder
       breeds
     end
   end
-end
-
-JSONAPI.configuration.resource_finder = BreedResourceFinder
-class BreedResource < JSONAPI::Resource
-  attribute :name, format: :title
-
-  # This is unneeded, just here for testing
-  routing_options param: :id
 
   def _save
     super
     return :accepted
   end
 end
-JSONAPI.configuration.resource_finder = JSONAPI::ActiveRelationResourceFinder
 
 class PlanetResource < JSONAPI::Resource
   attribute :name
@@ -1377,7 +1710,7 @@ class CraterResource < JSONAPI::Resource
 
   filter :description, apply: -> (records, value, options) {
     fail "context not set" unless options[:context][:current_user] != nil && options[:context][:current_user] == $test_user
-    records.where(concat_table_field(options[:table_alias], :description) => value)
+    records.where(concat_table_field(options.dig(:_relation_helper_options, :join_manager).source_join_details[:alias], :description) => value)
   }
 
   def self.verify_key(key, context = nil)
@@ -1388,11 +1721,13 @@ end
 class PreferencesResource < JSONAPI::Resource
   attribute :advanced_mode
 
-  has_one :author, :foreign_key_on => :related, class_name: "Person"
+  singleton singleton_key: -> (context) {
+    key = context[:current_user].try(:preferences).try(:id)
+    raise JSONAPI::Exceptions::RecordNotFound.new(nil) if key.nil?
+    key
+  }
 
-  def self.find_records(filters, options = {})
-    Preferences.limit(1)
-  end
+  has_one :author, :foreign_key_on => :related, class_name: "Person"
 end
 
 class FactResource < JSONAPI::Resource
@@ -1413,26 +1748,58 @@ end
 
 class PictureResource < JSONAPI::Resource
   attribute :name
-  has_one :imageable, polymorphic: true 
-  # has_one :imageable, polymorphic: true, polymorphic_relations: [:document, :product]
+  has_one :author
+
+  has_one :imageable, polymorphic: true
+  has_one :file_properties, inverse_relationship: :fileable, :foreign_key_on => :related, polymorphic: true
+
+  filter 'imageable.name', perform_joins: true, apply: -> (records, value, options) {
+    join_manager = options.dig(:_relation_helper_options, :join_manager)
+    relationship = _relationship(:imageable)
+    or_parts = relationship.resource_types.collect do |type|
+      table_alias = join_manager.join_details_by_polymorphic_relationship(relationship, type)[:alias]
+      "#{concat_table_field(table_alias, "name")} = '#{value.first}'"
+    end
+    records.where(Arel.sql(or_parts.join(' OR ')))
+  }
+
+  filter 'imageable#documents.name'
+end
+
+class ImageableResource < JSONAPI::Resource
+  polymorphic
+end
+
+class FileableResource < JSONAPI::Resource
+  polymorphic
 end
 
 class DocumentResource < JSONAPI::Resource
   attribute :name
-  has_many :pictures
+  has_many :pictures, inverse_relationship: :imageable
+  has_one :author, class_name: 'Person'
+
+  has_one :file_properties, inverse_relationship: :fileable, :foreign_key_on => :related
 end
 
 class ProductResource < JSONAPI::Resource
   attribute :name
-  has_one :picture, always_include_linkage_data: true
+  has_many :pictures, inverse_relationship: :imageable
+  has_one :designer, class_name: 'Person'
+
+  has_one :file_properties, inverse_relationship: :fileable, :foreign_key_on => :related
 
   def picture_id
     _model.picture.id
   end
 end
 
-# ToDo: Remove the need for the polymorphic fake resource
-class ImageableResource < JSONAPI::Resource
+class FilePropertiesResource < JSONAPI::Resource
+  attribute :name
+  attribute :size
+
+  has_one :fileable, polymorphic: true
+  has_one :tag
 end
 
 class MakeResource < JSONAPI::Resource
@@ -1449,6 +1816,8 @@ class AuthorResource < JSONAPI::Resource
   attributes :name
 
   has_many :books, inverse_relationship: :authors
+  has_many :pictures
+  # has_one :preferences
 end
 
 class BookResource < JSONAPI::Resource
@@ -1463,86 +1832,6 @@ end
 
 class AuthorDetailResource < JSONAPI::Resource
   attributes :author_stuff
-end
-
-class SimpleCustomLinkResource < JSONAPI::Resource
-  model_name 'Post'
-  attributes :title, :body, :subject
-
-  def subject
-    @model.title
-  end
-
-  has_one :writer, foreign_key: 'author_id', class_name: 'Writer'
-  has_one :section
-  has_many :comments, acts_as_set: false
-
-  filters :writer
-
-  def custom_links(options)
-    { raw: options[:serializer].link_builder.self_link(self) + "/raw" }
-  end
-end
-
-class CustomLinkWithRelativePathOptionResource < JSONAPI::Resource
-  model_name 'Post'
-  attributes :title, :body, :subject
-
-  def subject
-    @model.title
-  end
-
-  has_one :writer, foreign_key: 'author_id', class_name: 'Writer'
-  has_one :section
-  has_many :comments, acts_as_set: false
-
-  filters :writer
-
-  def custom_links(options)
-    { raw: options[:serializer].link_builder.self_link(self) + "/super/duper/path.xml" }
-  end
-end
-
-class CustomLinkWithIfCondition < JSONAPI::Resource
-  model_name 'Post'
-  attributes :title, :body, :subject
-
-  def subject
-    @model.title
-  end
-
-  has_one :writer, foreign_key: 'author_id', class_name: 'Writer'
-  has_one :section
-  has_many :comments, acts_as_set: false
-
-  filters :writer
-
-  def custom_links(options)
-    if title == "JR Solves your serialization woes!"
-      {conditional_custom_link: options[:serializer].link_builder.self_link(self) + "/conditional/link.json"}
-    end
-  end
-end
-
-class CustomLinkWithLambda < JSONAPI::Resource
-  model_name 'Post'
-  attributes :title, :body, :subject, :created_at
-
-  def subject
-    @model.title
-  end
-
-  has_one :writer, foreign_key: 'author_id', class_name: 'Writer'
-  has_one :section
-  has_many :comments, acts_as_set: false
-
-  filters :writer
-
-  def custom_links(options)
-    {
-      link_to_external_api: "http://external-api.com/posts/#{ created_at.year }/#{ created_at.month }/#{ created_at.day }-#{ subject.gsub(' ', '-') }"
-    }
-  end
 end
 
 module Api
@@ -1577,6 +1866,15 @@ module Api
       end
 
       filters :writer
+
+      def custom_links(options)
+        self_link = options[:serializer].link_builder.self_link(self)
+        self_link ||= ''
+        {
+          'self' => self_link + '?secret=true',
+          'raw' => self_link + "/raw"
+        }
+      end
     end
 
     class PersonResource < PersonResource; end
@@ -1602,6 +1900,14 @@ end
 module Api
   module V2
     class PreferencesResource < PreferencesResource; end
+    class SectionResource < SectionResource; end
+    class TagResource < TagResource; end
+    class CommentResource < CommentResource; end
+    class VehicleResource < VehicleResource; end
+    class CarResource < CarResource; end
+    class BoatResource < BoatResource; end
+    class HairCutResource < HairCutResource; end
+    class ExpenseEntryResource < ExpenseEntryResource; end
 
     class PersonResource < PersonResource
       has_many :book_comments
@@ -1613,33 +1919,17 @@ module Api
       model_name 'Person'
       attributes :name
 
-      has_many :books, inverse_relationship: :authors,
-               custom_methods: {
-                 apply_join: -> (options) {
-                   relationship = options[:relationship]
-                   relation_name = relationship.relation_name(options[:options])
+      has_many :books, inverse_relationship: :authors, relation_name: -> (options) {
+        book_admin = options[:context][:book_admin] || options[:context][:current_user].try(:book_admin)
 
-                   records = options[:records].joins(relation_name).references(relation_name)
-
-                   unless options[:context][:current_user].try(:book_admin)
-                     records = records.where("#{relation_name}.banned" => false)
-                   end
-                   records
-                 }
-               }
+        if book_admin
+          :books
+        else
+          :not_banned_books
+        end
+      }
 
       has_many :book_comments
-
-      def records_for(rel_name)
-        records = _model.public_send(rel_name)
-        if rel_name == :books
-          # Hide indirect access to banned books unless current user is a book admin
-          unless context[:current_user].try(:book_admin)
-            records = records.where(banned: false)
-          end
-        end
-        return records
-      end
     end
 
     class BookResource < JSONAPI::Resource
@@ -1673,6 +1963,7 @@ module Api
                   :book_comments
                 end
 
+                # Using an inner join here, which is different than the new default left_join
                 return records.joins(relation).references(relation).where('book_comments.id' => value)
               }
 
@@ -1753,15 +2044,34 @@ module Api
   module V3
     class PostResource < PostResource; end
     class PreferencesResource < PreferencesResource; end
+    class PlanetResource < JSONAPI::Resource
+    end
+    class MoonResource < JSONAPI::Resource
+      has_one :planet, always_include_optional_linkage_data: true
+
+      def self.records(options = {})
+        Moon.joins(:planet).merge(Planet.where(name: 'Satern')) # sic
+      end
+    end
   end
 end
 
 module Api
   module V4
-    class PostResource < PostResource; end
+    class PostResource < PostResource
+      class << self
+        def records(options = {})
+          # Sets up a performance issue for testing
+          super(options).joins(:comments)
+        end
+      end
+    end
+
     class PersonResource < PersonResource; end
     class ExpenseEntryResource < ExpenseEntryResource; end
-    class IsoCurrencyResource < IsoCurrencyResource; end
+    class IsoCurrencyResource < IsoCurrencyResource
+      has_many :expense_entries, exclude_links: :default
+    end
 
     class AuthorResource < Api::V2::AuthorResource; end
 
@@ -1780,25 +2090,27 @@ end
 
 module Api
   module V5
+    class PostResource < JSONAPI::Resource
+      attribute :title
+      attribute :body
+
+      has_one :author, class_name: 'Person', exclude_links: [:self, "related"]
+      has_one :section, exclude_links: [:self, :related]
+      has_many :tags, acts_as_set: true, inverse_relationship: :posts, eager_load_on_include: false, exclude_links: :default
+      has_many :comments, acts_as_set: false, inverse_relationship: :post, exclude_links: ["self", :related]
+    end
+
     class AuthorResource < JSONAPI::Resource
       attributes :name, :email
       model_name 'Person'
       relationship :posts, to: :many
       relationship :author_detail, to: :one, foreign_key_on: :related
 
-      filter :name
-
-      def self.find_records(filters, options = {})
-        rel = _model_class
-        filters.each do |attr, filter|
-          if attr.to_s == "id"
-            rel = rel.where(id: filter)
-          else
-            rel = rel.where("\"#{attr}\" LIKE \"%#{filter[0]}%\"")
-          end
-        end
-        rel
-      end
+      filter :name, apply: lambda { |records, value, options|
+        table_alias = options.dig(:_relation_helper_options, :join_manager).source_join_details[:alias]
+        t = Arel::Table.new(:people, as: table_alias)
+        records.where(t[:name].matches("%#{value[0]}%"))
+      }
 
       def fetchable_fields
         super - [:email]
@@ -1813,28 +2125,64 @@ module Api
       attributes :author_stuff
     end
 
+    class PaintingResource < JSONAPI::Resource
+      model_name 'Painting'
+      attributes :title, :category #, :collector_roster
+      has_one :painter
+      has_many :collectors
+
+      filter :title
+      filter :category
+      filter :collectors
+
+      def collector_roster
+        collectors.map(&:name)
+      end
+    end
+
+    class CollectorResource < JSONAPI::Resource
+      attributes :name
+      has_one :painting
+    end
+
+    class PainterResource < JSONAPI::Resource
+      model_name 'Painter'
+      attributes :name
+      has_many :paintings
+
+      filter :name, apply: lambda { |records, value, options|
+        records.where('name LIKE ?', value)
+      }
+    end
+
     class PersonResource < PersonResource; end
-    class PostResource < PostResource; end
+    class PreferencesResource < PreferencesResource; end
     class TagResource < TagResource; end
     class SectionResource < SectionResource; end
     class CommentResource < CommentResource; end
     class ExpenseEntryResource < ExpenseEntryResource; end
     class IsoCurrencyResource < IsoCurrencyResource; end
     class EmployeeResource < EmployeeResource; end
+    class VehicleResource < PersonResource; end
+    class HairCutResource < HairCutResource; end
   end
 end
 
 module Api
   module V6
+    class HairCutResource < HairCutResource; end
+
     class AuthorDetailResource < JSONAPI::Resource
       attributes :author_stuff
+      has_one :author, foreign_key: :person_id, inverse_relationship: :author_detail
     end
 
     class AuthorResource < JSONAPI::Resource
       attributes :name, :email
       model_name 'Person'
       relationship :posts, to: :many
-      relationship :author_detail, to: :one, foreign_key_on: :related
+      relationship :author_detail, to: :one, foreign_key_on: :related, foreign_key: :person_id
+      has_one :hair_cut
 
       filter :name
 
@@ -1843,6 +2191,7 @@ module Api
       end
     end
 
+    class PreferencesResource < PreferencesResource; end
     class PersonResource < PersonResource; end
     class TagResource < TagResource; end
 
@@ -1853,12 +2202,9 @@ module Api
     class CommentResource < CommentResource; end
 
     class PostResource < PostResource
-      # Test caching with SQL fragments
-      def self.records(options = {})
-        _model_class.all.joins('INNER JOIN people on people.id = author_id')
-      end
-
       attribute :base
+
+      has_one :author
 
       def base
         _model.title
@@ -1960,6 +2306,98 @@ module Api
       attribute :numero_telefone
     end
   end
+
+  module V9
+    class PersonResource < JSONAPI::Resource
+      has_one :preferences
+      singleton false
+    end
+
+    class PostResource < PostResource
+      has_many :comments, apply_join: -> (records, relationship, resource_type, join_type, options) {
+        case join_type
+          when :inner
+            records = records.joins(relationship.relation_name(options))
+          when :left
+            records = records.joins_left(relationship.relation_name(options))
+        end
+        records.where(comments: {approved: true})
+      }
+    end
+
+    class TagResource < TagResource; end
+    class SectionResource < SectionResource; end
+    class CommentResource < CommentResource
+      has_one :author, class_name: 'Person', apply_join: -> (records, relationship, resource_type, join_type, options) {
+        records = apply_join(records: records,
+                             relationship: relationship,
+                             resource_type: resource_type,
+                             join_type: join_type,
+                             options: options)
+
+        records.where(author: {special: true})
+      }
+    end
+
+    class AuthorResource < Api::V2::AuthorResource
+    end
+
+    class BookResource < Api::V2::BookResource
+    end
+
+    class BookCommentResource < Api::V2::BookCommentResource
+    end
+
+    class PreferencesResource < JSONAPI::Resource
+      singleton singleton_key: -> (context) {
+        key = context[:current_user].try(:preferences).try(:id)
+        raise JSONAPI::Exceptions::RecordNotFound.new(nil) if key.nil?
+        key
+      }
+
+      has_one :person, :foreign_key_on => :related
+
+      attribute :nickname
+    end
+  end
+
+  module V10
+    class PersonResource < PersonResource; end
+    class PostResource < PostResource
+      has_many :comments, apply_join: -> (records, relationship, resource_type, join_type, options) {
+        case join_type
+        when :inner
+          records = records.joins(relationship.relation_name(options))
+        when :left
+          records = records.joins_left(relationship.relation_name(options))
+        end
+        records.where(comments: {approved: true})
+      }
+    end
+
+    class TagResource < TagResource; end
+    class SectionResource < SectionResource; end
+    class CommentResource < CommentResource
+      has_one :author, class_name: 'Person', apply_join: -> (records, relationship, resource_type, join_type, options) {
+        records = apply_join(records: records,
+                             relationship: relationship,
+                             resource_type: resource_type,
+                             join_type: join_type,
+                             options: options)
+
+        records.where(author: {special: true})
+      }
+    end
+
+    class AuthorResource < Api::V2::AuthorResource
+    end
+
+    class BookResource < Api::V2::BookResource
+    end
+
+    class BookCommentResource < Api::V2::BookCommentResource
+    end
+  end
 end
 
 module AdminApi
@@ -1976,31 +2414,66 @@ module DasherizedNamespace
   end
 end
 
+module OptionalNamespace
+  module V1
+    class PersonResource < JSONAPI::Resource
+    end
+  end
+end
+
 module MyEngine
   module Api
     module V1
+      class PostResource < PostResource
+      end
+
       class PersonResource < JSONAPI::Resource
+        has_many :posts
       end
     end
   end
 
   module AdminApi
     module V1
+      class PostResource < PostResource
+      end
+
       class PersonResource < JSONAPI::Resource
+        has_many :posts
       end
     end
   end
 
   module DasherizedNamespace
     module V1
+      class PostResource < PostResource
+      end
+
       class PersonResource < JSONAPI::Resource
+        has_many :posts
+      end
+    end
+  end
+
+  module OptionalNamespace
+    module V1
+      class PostResource < PostResource
+      end
+
+      class PersonResource < JSONAPI::Resource
+        has_many :posts
       end
     end
   end
 end
 
 module ApiV2Engine
+  class PostResource < PostResource
+    has_one :person
+  end
+
   class PersonResource < JSONAPI::Resource
+    has_many :posts
   end
 end
 
@@ -2046,7 +2519,7 @@ end
 class IndicatorResource < JSONAPI::Resource
   attributes :name
   has_one :agency
-  has_many :widgets
+  has_many :widgets, foreign_key: :indicator_import_id, primary_key: :import_id
 
   def self.sortable_fields(_context = nil)
     super + [:'widgets.name']
@@ -2055,7 +2528,7 @@ end
 
 class WidgetResource < JSONAPI::Resource
   attributes :name
-  has_one :indicator
+  has_one :indicator, foreign_key: :indicator_import_id, primary_key: :import_id
 
   def self.sortable_fields(_context = nil)
     super + [:'indicator.agency.name']
@@ -2117,27 +2590,23 @@ end
 module Api
   class BoxResource < JSONAPI::Resource
     has_many :things
+
+    filter 'things.things.name'
+    filter 'things.name'
   end
 
   class ThingResource < JSONAPI::Resource
     has_one :box
     has_one :user
 
-    has_many :things,
-             custom_methods: {
-                 apply_join: -> (options) {
-                   table_alias = "aliased_#{options[:table_alias]}"
-                   options[:table_alias] = table_alias
+    has_many :things
 
-                   join_stmt = "LEFT OUTER JOIN related_things related_things_#{table_alias} ON related_things_#{table_alias}.from_id = things.id LEFT OUTER JOIN things \"#{table_alias}\" ON \"#{table_alias}\".id = related_things_#{table_alias}.to_id"
-
-                   return options[:records].joins(join_stmt)
-                 }
-             }
+    filter 'things.things.name'
   end
 
   class UserResource < JSONAPI::Resource
     has_many :things
+    attribute :name
   end
 end
 
@@ -2163,6 +2632,14 @@ end
 
 class RespondentResource < JSONAPI::Resource
   abstract
+end
+
+class ListResource < JSONAPI::Resource
+  has_many :items, class_name: 'ListItem'
+end
+
+class ListItemResource < JSONAPI::Resource
+  has_one :list
 end
 
 class StorageResource < JSONAPI::Resource
